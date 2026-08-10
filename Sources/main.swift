@@ -278,15 +278,18 @@ func mappingPayload(for group: [Rule]) -> String {
 
 let emptyMappingPayload = jsonString(["UserKeyMapping": [Any]()])
 
-/// 规则为空且开机项未安装 → 用户什么都没做就点了保存，该提示而不是静默保存。
-/// 开机项已安装时必须允许保存空配置，那正是「清空」要走的路。
-func blocksEmptySave(rulesEmpty: Bool, daemonInstalled: Bool) -> Bool {
-	rulesEmpty && !daemonInstalled
-}
-
-/// 本地改动尚未同步：daemon 会按已保存的 rules.json 把「立即应用」的结果覆盖回去。
-func daemonOverrides(installed: Bool, running: Bool, dirty: Bool) -> Bool {
-	installed && running && dirty
+/// 写规则文件。故意非原子写入（直接截断覆盖）：这样只需要文件本身的写权限，不需要
+/// 目录写权限 —— 目录是 root 拥有的，文件在安装开机项时 chown 给当前用户。
+func saveRules(_ file: RuleFile, to path: String) -> Bool {
+	let enc = JSONEncoder()
+	enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+	guard let data = try? enc.encode(file) else { return false }
+	do {
+		try data.write(to: URL(fileURLWithPath: path), options: [])
+		return true
+	} catch {
+		return false
+	}
 }
 
 /// 把规则按设备分组写入。
@@ -443,7 +446,8 @@ func installDaemon(rules: RuleFile) throws {
 	# 拷完先自检签名：签名不完整的话 launchd exec 时会被 CS_KILL 直接杀掉
 	/usr/bin/codesign --verify --strict "\(kDaemonApp)"
 	/bin/rm -f "\(kLegacyDaemonPath)"
-	/usr/bin/install -o root -g wheel -m 644 "\(rulesTmp.path)" "\(kRulesPath)"
+	# 规则文件归当前用户所有，GUI 才能在不提权的情况下改规则
+	/usr/bin/install -o \(getuid()) -g \(getgid()) -m 644 "\(rulesTmp.path)" "\(kRulesPath)"
 	/usr/bin/install -o root -g wheel -m 644 "\(plistTmp.path)" "\(kPlistPath)"
 	/bin/launchctl bootstrap system "\(kPlistPath)"
 	"""
@@ -494,7 +498,6 @@ final class Model: ObservableObject {
 	@Published var dstUsage: UInt32 = 0x26      // 默认数字 9
 	@Published var status = ""
 	@Published var daemon: DaemonState = .notInstalled
-	@Published var dirty = false                // 有未同步到开机项的改动
 
 	private var timer: Timer?
 
@@ -520,6 +523,11 @@ final class Model: ObservableObject {
 		return rules.filter { $0.deviceID == s.id }
 	}
 
+	/// 规则文件能否由当前用户写入。安装开机项时会把它 chown 给当前用户 —— 正是为了
+	/// 让改规则不再需要密码。否则每改一次都要提权，那才是上一版被迫分成「立即应用」
+	/// 和「保存」两步、并且产生「未保存改动会被 daemon 覆盖」这种怪状态的根源。
+	var rulesPersistable: Bool { FileManager.default.isWritableFile(atPath: kRulesPath) }
+
 	func addRule() {
 		guard let kb = selected else { return }
 		if srcUsage == dstUsage {
@@ -531,58 +539,39 @@ final class Model: ObservableObject {
 					 srcUsage: srcUsage, dstUsage: dstUsage)
 		rules.removeAll { $0.id == r.id }
 		rules.append(r)
-		dirty = true
-		applyNow()
+		commit("已添加")
 	}
 
 	func delete(_ r: Rule) {
 		rules.removeAll { $0.id == r.id }
-		dirty = true
 		// 该设备可能已无规则，需要显式清空，否则残留映射要等重连才消失
 		let stillHas = rules.contains { $0.deviceID == r.deviceID }
-		apply(rules: rules, clearing: stillHas ? [] : [r.matches])
-		status = "已删除" + (daemonWillOverride ? overrideHint : "并生效")
+		commit("已删除", alsoClearing: stillHas ? [] : [r.matches])
 	}
 
-	private let overrideHint = "，但开机项仍按上次保存的配置运行，几秒后会覆盖回去"
-		+ " —— 点「保存并开机生效」同步"
-
-	/// 让设备的实际状态等于当前规则：有规则的写入，没规则的显式清空（否则残留映射
-	/// 要等设备重连才消失）
-	func applyNow() {
+	/// 改动立即生效并落盘。只有一个状态，没有「未保存」这回事。
+	private func commit(_ note: String, alsoClearing extra: [[String]] = []) {
 		let configured = Set(rules.map(\.deviceID))
-		let clearing = keyboards
+		let clearing = extra + keyboards
 			.filter { !configured.contains($0.id) }
 			.map { $0.matchDicts.map(jsonString) }
 		apply(rules: rules, clearing: clearing)
-		status = (rules.isEmpty ? "已清空所有键盘的映射" : "已应用到当前连接的键盘")
-			+ (daemonWillOverride ? overrideHint : "")
+
+		if rulesPersistable {
+			status = saveRules(RuleFile(rules: rules), to: kRulesPath)
+				? "\(note)，已生效"
+				: "\(note)，已生效，但规则文件写入失败"
+		} else {
+			status = "\(note)，已生效 —— 重启或键盘重连后会失效，点「开机自动生效」"
+		}
 	}
 
-	/// 本地改动还没同步到 daemon：daemon 仍按已保存的 rules.json 每 3 秒补写，
-	/// 会把「立即应用」的结果覆盖回去
-	var daemonWillOverride: Bool {
-		if case .installed(let running) = daemon {
-			return daemonOverrides(installed: true, running: running, dirty: dirty)
-		}
-		return false
-	}
-
-	func sync() {
-		// 规则为空且开机项还没装：属于什么都没做就点保存，提示一下。
-		// 开机项已装的情况下必须允许保存空配置 —— 那正是「清空」要走的路。
-		var installed = true
-		if case .notInstalled = daemon { installed = false }
-		if blocksEmptySave(rulesEmpty: rules.isEmpty, daemonInstalled: installed) {
-			status = "还没有规则：先选好按键，点「添加规则」"
-			return
-		}
+	func enableAtBoot() {
 		do {
 			try installDaemon(rules: RuleFile(rules: rules))
-			dirty = false
-			status = "已保存，正在确认 daemon 启动…"
+			status = "正在确认 daemon 启动…"
 		} catch {
-			status = "未保存：\(error.localizedDescription)"
+			status = "未完成：\(error.localizedDescription)"
 			refresh()
 			return
 		}
@@ -593,13 +582,11 @@ final class Model: ObservableObject {
 				try? await Task.sleep(nanoseconds: 500_000_000)
 				refresh()
 				if case .installed(let running) = daemon, running {
-					status = rules.isEmpty
-						? "已保存：无规则，映射已全部清除"
-						: "已保存，开机（含登录窗口）自动生效"
+					status = "开机（含登录窗口）自动生效"
 					return
 				}
 			}
-			status = "已保存，但 daemon 没能启动：" + (daemonFailureDetail() ?? "原因未知")
+			status = "daemon 没能启动：" + (daemonFailureDetail() ?? "原因未知")
 		}
 	}
 
@@ -814,14 +801,11 @@ struct ContentView: View {
 				switch m.daemon {
 				case .notInstalled:
 					Image(systemName: "circle.dotted").foregroundStyle(.secondary)
-					Text("开机项未安装 —— 当前映射重启后会失效")
+					Text("仅本次开机有效 —— 重启或键盘重连后会失效")
 				case .installed(let running):
 					Image(systemName: running ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
 						.foregroundStyle(running ? .green : .orange)
 					Text(running ? "开机项运行中，登录窗口同样有效" : "开机项已安装但未运行")
-				}
-				if m.dirty {
-					Tag(text: "有未保存改动", tint: .orange)
 				}
 				Spacer()
 			}
@@ -836,12 +820,14 @@ struct ContentView: View {
 				}
 				Spacer(minLength: 12)
 				if case .installed = m.daemon {
+					if !m.rulesPersistable {
+						Button("修复保存权限") { m.enableAtBoot() }
+					}
 					Button("移除开机项") { m.remove() }
-						.controlSize(.regular)
+				} else {
+					Button("开机自动生效") { m.enableAtBoot() }
+						.buttonStyle(.borderedProminent)
 				}
-				Button("立即应用") { m.applyNow() }
-				Button("保存并开机生效") { m.sync() }
-					.buttonStyle(.borderedProminent)
 			}
 		}
 		.padding(.horizontal, 20)
@@ -934,16 +920,18 @@ func runSelfTest() -> Never {
 		check("规则文件 round-trip", false, "编解码失败")
 	}
 
-	print("保存与覆盖判定")
-	check("空规则 + 未装开机项 → 阻止保存并提示",
-		  blocksEmptySave(rulesEmpty: true, daemonInstalled: false))
-	check("空规则 + 已装开机项 → 允许保存（这就是清空）",
-		  !blocksEmptySave(rulesEmpty: true, daemonInstalled: true))
-	check("有规则 → 允许保存", !blocksEmptySave(rulesEmpty: false, daemonInstalled: false))
-	check("已装且运行且有未保存改动 → daemon 会覆盖回去",
-		  daemonOverrides(installed: true, running: true, dirty: true))
-	check("已同步 → 不会被覆盖", !daemonOverrides(installed: true, running: true, dirty: false))
-	check("未安装 → 不会被覆盖", !daemonOverrides(installed: false, running: false, dirty: true))
+	print("规则文件落盘")
+	let tmpRules = NSTemporaryDirectory() + "kr-selftest-rules.json"
+	try? FileManager.default.removeItem(atPath: tmpRules)
+	eq("文件不存在时读出空规则", loadRules(tmpRules).rules.count, 0)
+	check("写入成功", saveRules(RuleFile(rules: [r1, r2]), to: tmpRules))
+	eq("读回条数", loadRules(tmpRules).rules.count, 2)
+	eq("读回源键", loadRules(tmpRules).rules[0].srcUsage, 0xE6)
+	check("覆盖写入为空规则", saveRules(RuleFile(rules: []), to: tmpRules))
+	eq("清空后读出 0 条", loadRules(tmpRules).rules.count, 0)
+	check("写不进去的路径返回 false",
+		  !saveRules(RuleFile(rules: []), to: "/System/kr-should-not-write.json"))
+	try? FileManager.default.removeItem(atPath: tmpRules)
 
 	print("hidutil 行为")
 	for (i, m) in extJSON.enumerated() {
