@@ -51,8 +51,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleName</key><string>KeyRemap</string>
 	<key>CFBundleIconFile</key><string>KeyRemap</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>1.0.3</string>
-	<key>CFBundleVersion</key><string>4</string>
+	<key>CFBundleShortVersionString</key><string>1.0.4</string>
+	<key>CFBundleVersion</key><string>5</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 </dict>

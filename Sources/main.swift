@@ -530,6 +530,11 @@ final class Model: ObservableObject {
 	}
 
 	func sync() {
+		// 没有规则时别默默保存一个空配置然后报「已保存」—— 那会让人以为已经生效了
+		if rules.isEmpty {
+			status = "还没有规则：先选好按键，点「添加规则」"
+			return
+		}
 		do {
 			try installDaemon(rules: RuleFile(rules: rules))
 			dirty = false
@@ -693,7 +698,7 @@ struct ContentView: View {
 					.font(.caption2).foregroundStyle(.tertiary)
 			}
 
-			Section("新建映射") {
+			Section {
 				Picker("把这个键", selection: $m.srcUsage) {
 					ForEach(allKeys) { Text($0.name).tag($0.usage) }
 				}
@@ -706,6 +711,22 @@ struct ContentView: View {
 					Button("添加规则") { m.addRule() }
 						.buttonStyle(.borderedProminent)
 						.disabled(m.selected == nil || m.srcUsage == m.dstUsage)
+				}
+			} header: {
+				Text("新建映射")
+			} footer: {
+				// 这两个下拉只是编辑器，键帽是预览 —— 不点「添加规则」什么都不会发生。
+				// 之前有人（包括作者自己）选好键就直接点「保存并开机生效」，然后以为坏了。
+				if m.rules.isEmpty {
+					HStack(spacing: 5) {
+						Image(systemName: "arrow.turn.down.right")
+						Text("上面是预览，点「添加规则」才会生效")
+					}
+					.font(.caption2)
+					.foregroundStyle(.orange)
+				} else {
+					Text("点「添加规则」加入下方列表并立即生效")
+						.font(.caption2).foregroundStyle(.tertiary)
 				}
 			}
 
