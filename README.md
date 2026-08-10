@@ -44,6 +44,8 @@ Magic Keyboard with Touch ID  [USB]
   匹配 命中  {"PrimaryUsage":6,"PrimaryUsagePage":1,"SerialNumber":"XXXXXXXXXXXXX"}
 ```
 
+上面的序列号是抹过的。`--list` 打印的是真实序列号 —— 蓝牙连接时 macOS 上报的是这块键盘的 BT MAC 地址，贴到 issue 或截图之前记得抹掉。
+
 ## 为什么需要一个常驻进程
 
 `UserKeyMapping` 是挂在 `IOHIDDevice` 对象上的属性，**设备一断开就随对象消失**：拔插 USB 线、蓝牙键盘休眠、重新配对、重启，映射都会没了。
@@ -76,7 +78,7 @@ git clone https://github.com/jizhi0v0/KeyRemap.git && cd KeyRemap && sh build.sh
 
 1. 打开 App，在「键盘」里点选目标键盘。
 2. 选「把 [某个键] 变成 [某个键]」，点**添加规则** —— 立即生效，不需要密码。
-3. 点**保存并开机生效** —— 输一次管理员密码，安装 LaunchDaemon，之后开机与设备重连都自动生效。
+3. 点**开机自动生效** —— 输一次管理员密码，安装 LaunchDaemon，之后开机与设备重连都自动生效。
 
 **卸载**：App 里点「移除开机项」。或者手工：
 
@@ -84,6 +86,7 @@ git clone https://github.com/jizhi0v0/KeyRemap.git && cd KeyRemap && sh build.sh
 sudo launchctl bootout system/local.KeyRemap
 sudo rm -f /Library/LaunchDaemons/local.KeyRemap.plist
 sudo rm -rf "/Library/Application Support/KeyRemap"
+sudo rm -f /var/log/keyremap.log
 hidutil property --set '{"UserKeyMapping":[]}'
 ```
 
@@ -132,7 +135,7 @@ sh Tests/run.sh
 - `KeyRemap --selftest`：键码换算、匹配条件生成（含 `Built-In` 连字符和 fail-closed）、
   设备身份跨 USB/蓝牙一致、多规则合并载荷、规则文件 round-trip、空规则的保存与清空语义
 
-同一个二进制三种模式：无参数是 GUI，`--daemon` 由 LaunchDaemon 以 root 运行，`--list` 打印检测到的键盘与匹配命中情况。
+同一个二进制四种模式：无参数是 GUI，`--daemon` 由 LaunchDaemon 以 root 运行，`--list` 打印检测到的键盘与匹配命中情况，`--selftest` 跑纯逻辑断言。
 
 ## License
 

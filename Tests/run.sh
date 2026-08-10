@@ -43,6 +43,10 @@ if [ "${SKIP_BUILD:-}" != "1" ]; then
 fi
 [ -x "$EXEC" ] || { bad "找不到 $EXEC"; exit 1; }
 
+# 全局映射的基线。断言的是「测试前后不变」而不是「整机为空」—— 跑测试的机器上很可能
+# 正装着 KeyRemap 自己的开机项（或别的 hidutil 工具），要求为空的话必然误报。
+GLOBAL_BEFORE="$(hidutil property --get UserKeyMapping)"
+
 echo "构建产物"
 archs="$(lipo -archs "$EXEC" 2>/dev/null)"
 case "$archs" in *arm64*) ok "含 arm64 slice" ;; *) bad "缺 arm64 slice" "$archs" ;; esac
@@ -137,8 +141,8 @@ else
 fi
 
 echo "全局映射未被测试污染"
-[ -z "$(hidutil property --get UserKeyMapping | tr -d '() \n\t')" ] \
-	&& ok "全局 UserKeyMapping 仍为空" || bad "测试污染了全局映射"
+[ "$(hidutil property --get UserKeyMapping)" = "$GLOBAL_BEFORE" ] \
+	&& ok "全局 UserKeyMapping 与测试前一致" || bad "测试改动了全局映射"
 
 printf '\n%s\n' "通过 $PASS，失败 $FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

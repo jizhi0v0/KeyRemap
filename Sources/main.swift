@@ -8,10 +8,12 @@
 // 提示、终端、虚拟机内一律有效。（Accessibility API 方案在 secure input 下会被
 // 系统屏蔽，这是它无法用于登录场景的根本原因。）
 //
-// 同一个二进制两种模式：
+// 同一个二进制四种模式：
 //   · 无参数     → SwiftUI 图形界面，选键盘、选映射、立即应用、装/卸开机项
 //   · --daemon   → 无界面常驻，由 LaunchDaemon 以 root 运行，负责开机（含登录
 //                  窗口）和设备重连后自动补上映射
+//   · --list     → 打印检测到的键盘、生成的匹配条件、各条匹配当前命中的设备
+//   · --selftest → 纯逻辑断言，不需要 root，不改动真实键盘的映射
 //
 // 为什么需要常驻：UserKeyMapping 挂在 IOHIDDevice 对象上，设备一断开就随对象
 // 消失。蓝牙休眠、拔插线、重新配对之后都必须重设。
@@ -747,7 +749,7 @@ struct ContentView: View {
 				Text("新建映射")
 			} footer: {
 				// 这两个下拉只是编辑器，键帽是预览 —— 不点「添加规则」什么都不会发生。
-				// 之前有人（包括作者自己）选好键就直接点「保存并开机生效」，然后以为坏了。
+				// 之前有人（包括作者自己）选好键就直接点底部的按钮，然后以为坏了。
 				if m.rules.isEmpty {
 					HStack(spacing: 5) {
 						Image(systemName: "arrow.turn.down.right")
