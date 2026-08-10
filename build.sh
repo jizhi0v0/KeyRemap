@@ -3,7 +3,12 @@
 # 从源码构建 KeyRemap.app，产物在 build/KeyRemap.app。
 # 只需要 Xcode 命令行工具（swiftc + iconutil + codesign），没有其他依赖。
 #
-#   sh build.sh
+#   sh build.sh              自动挑签名方式：有 Developer ID 就用它，否则 ad-hoc
+#   SIGN_ID=- sh build.sh    强制 ad-hoc（本机自用足够）
+#   SIGN_ID="Developer ID Application: 你的名字 (TEAMID)" sh build.sh
+#
+# 用 Developer ID 签名时会同时启用 hardened runtime 和安全时间戳 —— 这是提交
+# 公证（notarization）的前提。本程序不需要任何 entitlement。
 #
 set -eu
 
@@ -43,9 +48,24 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-echo "[4/4] 临时签名"
-codesign --force --sign - --identifier local.KeyRemap "$APP"
+echo "[4/4] 签名"
+if [ "${SIGN_ID:-}" = "" ]; then
+	# 自动挑：优先 Developer ID Application，找不到就退回 ad-hoc
+	SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+		| sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
+	[ -n "$SIGN_ID" ] || SIGN_ID="-"
+fi
+
+if [ "$SIGN_ID" = "-" ]; then
+	echo "  ad-hoc 签名（本机自用可以，别人下载会被 Gatekeeper 拦）"
+	codesign --force --sign - --identifier local.KeyRemap "$APP"
+else
+	echo "  $SIGN_ID"
+	codesign --force --timestamp --options runtime \
+		--sign "$SIGN_ID" --identifier local.KeyRemap "$APP"
+fi
 codesign --verify --strict "$APP"
+codesign -dv "$APP" 2>&1 | grep -E '^(Authority|TeamIdentifier|Signature|Timestamp)' || true
 
 echo
 echo "构建完成：$APP"
