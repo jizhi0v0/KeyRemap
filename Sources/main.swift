@@ -25,8 +25,16 @@ import IOKit.hid
 let kAppLabel = "local.KeyRemap"
 let kPlistPath = "/Library/LaunchDaemons/local.KeyRemap.plist"
 let kRulesDir = "/Library/Application Support/KeyRemap"
-let kRulesPath = "/Library/Application Support/KeyRemap/rules.json"
 let kHidutil = "/usr/bin/hidutil"
+
+/// 规则文件路径。测试需要指向别处，所以非 root 时允许用 KEYREMAP_RULES 覆盖 ——
+/// daemon 由 launchd 以 root 启动、plist 不设环境变量，生产路径不受影响。
+let kRulesPath: String = {
+	if geteuid() != 0, let p = ProcessInfo.processInfo.environment["KEYREMAP_RULES"], !p.isEmpty {
+		return p
+	}
+	return "/Library/Application Support/KeyRemap/rules.json"
+}()
 
 // daemon 运行的是拷到 root 拥有目录下的**整个 app bundle**，而不是单独抠出来的
 // 可执行文件。原因：codesign 的签名里包含 Info.plist 的哈希，单拷可执行文件会让
@@ -259,23 +267,41 @@ func runTool(_ path: String, _ args: [String]) -> (Int32, String) {
 	return (p.terminationStatus, String(data: data, encoding: .utf8) ?? "")
 }
 
-/// 把规则按设备分组写入。UserKeyMapping 是整个数组一次性覆盖的，所以同一设备的
-/// 多条规则必须合并成一次 --set。
+/// 一个设备上所有规则合并成的 UserKeyMapping 载荷。
+/// 必须整组一起算：UserKeyMapping 是整个数组一次性覆盖的，逐条 --set 会互相顶掉。
+func mappingPayload(for group: [Rule]) -> String {
+	let mapping = group.map {
+		["HIDKeyboardModifierMappingSrc": $0.srcCode, "HIDKeyboardModifierMappingDst": $0.dstCode]
+	}
+	return jsonString(["UserKeyMapping": mapping])
+}
+
+let emptyMappingPayload = jsonString(["UserKeyMapping": [Any]()])
+
+/// 规则为空且开机项未安装 → 用户什么都没做就点了保存，该提示而不是静默保存。
+/// 开机项已安装时必须允许保存空配置，那正是「清空」要走的路。
+func blocksEmptySave(rulesEmpty: Bool, daemonInstalled: Bool) -> Bool {
+	rulesEmpty && !daemonInstalled
+}
+
+/// 本地改动尚未同步：daemon 会按已保存的 rules.json 把「立即应用」的结果覆盖回去。
+func daemonOverrides(installed: Bool, running: Bool, dirty: Bool) -> Bool {
+	installed && running && dirty
+}
+
+/// 把规则按设备分组写入。
 func apply(rules: [Rule], clearing extraDeviceMatches: [[String]] = []) {
 	var byDevice: [String: [Rule]] = [:]
 	for r in rules { byDevice[r.deviceID, default: []].append(r) }
 
 	for (_, group) in byDevice {
-		let mapping = group.map {
-			["HIDKeyboardModifierMappingSrc": $0.srcCode, "HIDKeyboardModifierMappingDst": $0.dstCode]
-		}
-		let payload = jsonString(["UserKeyMapping": mapping])
+		let payload = mappingPayload(for: group)
 		for m in group[0].matches {
 			runTool(kHidutil, ["property", "--matching", m, "--set", payload])
 		}
 	}
 	// 规则被删空的设备：显式清空，否则残留映射要等到设备重连才消失
-	let empty = jsonString(["UserKeyMapping": []])
+	let empty = emptyMappingPayload
 	for matches in extraDeviceMatches {
 		for m in matches {
 			runTool(kHidutil, ["property", "--matching", m, "--set", empty])
@@ -515,8 +541,11 @@ final class Model: ObservableObject {
 		// 该设备可能已无规则，需要显式清空，否则残留映射要等重连才消失
 		let stillHas = rules.contains { $0.deviceID == r.deviceID }
 		apply(rules: rules, clearing: stillHas ? [] : [r.matches])
-		status = "已删除并生效"
+		status = "已删除" + (daemonWillOverride ? overrideHint : "并生效")
 	}
+
+	private let overrideHint = "，但开机项仍按上次保存的配置运行，几秒后会覆盖回去"
+		+ " —— 点「保存并开机生效」同步"
 
 	/// 让设备的实际状态等于当前规则：有规则的写入，没规则的显式清空（否则残留映射
 	/// 要等设备重连才消失）
@@ -526,12 +555,25 @@ final class Model: ObservableObject {
 			.filter { !configured.contains($0.id) }
 			.map { $0.matchDicts.map(jsonString) }
 		apply(rules: rules, clearing: clearing)
-		status = rules.isEmpty ? "已清空所有键盘的映射" : "已应用到当前连接的键盘"
+		status = (rules.isEmpty ? "已清空所有键盘的映射" : "已应用到当前连接的键盘")
+			+ (daemonWillOverride ? overrideHint : "")
+	}
+
+	/// 本地改动还没同步到 daemon：daemon 仍按已保存的 rules.json 每 3 秒补写，
+	/// 会把「立即应用」的结果覆盖回去
+	var daemonWillOverride: Bool {
+		if case .installed(let running) = daemon {
+			return daemonOverrides(installed: true, running: running, dirty: dirty)
+		}
+		return false
 	}
 
 	func sync() {
-		// 没有规则时别默默保存一个空配置然后报「已保存」—— 那会让人以为已经生效了
-		if rules.isEmpty {
+		// 规则为空且开机项还没装：属于什么都没做就点保存，提示一下。
+		// 开机项已装的情况下必须允许保存空配置 —— 那正是「清空」要走的路。
+		var installed = true
+		if case .notInstalled = daemon { installed = false }
+		if blocksEmptySave(rulesEmpty: rules.isEmpty, daemonInstalled: installed) {
 			status = "还没有规则：先选好按键，点「添加规则」"
 			return
 		}
@@ -551,7 +593,9 @@ final class Model: ObservableObject {
 				try? await Task.sleep(nanoseconds: 500_000_000)
 				refresh()
 				if case .installed(let running) = daemon, running {
-					status = "已保存，开机（含登录窗口）自动生效"
+					status = rules.isEmpty
+						? "已保存：无规则，映射已全部清除"
+						: "已保存，开机（含登录窗口）自动生效"
 					return
 				}
 			}
@@ -817,9 +861,118 @@ struct KeyRemapApp: App {
 	}
 }
 
+// MARK: - 自测（--selftest）
+
+func runSelfTest() -> Never {
+	var failures = 0
+	func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+		if ok {
+			print("  ✓ \(name)")
+		} else {
+			failures += 1
+			print("  ✗ \(name)" + (detail.isEmpty ? "" : "  —— \(detail)"))
+		}
+	}
+	func eq<T: Equatable>(_ name: String, _ got: T, _ want: T) {
+		check(name, got == want, "得到 \(got)，期望 \(want)")
+	}
+	func kb(_ vid: Int, _ pid: Int, _ transport: String, serial: String = "", builtIn: Bool = false)
+		-> Keyboard {
+		Keyboard(product: "kb", serial: serial, vendorID: vid, productID: pid,
+				 transport: transport, builtIn: builtIn)
+	}
+
+	print("键码换算")
+	eq("右 Option → 0x7000000E6", keyCode(0xE6), 0x7_0000_00E6)
+	eq("数字 9 → 0x700000026", keyCode(0x26), 0x7_0000_0026)
+	eq("右 Option 十进制", keyCode(0xE6), 30_064_771_302)
+	eq("按键表里没有重复 usage", allKeys.count, Set(allKeys.map(\.usage)).count)
+
+	print("匹配条件：外接键盘")
+	let ext = kb(0x05AC, 0x029A, "USB", serial: "ABC123")
+	let extJSON = ext.matchDicts.map { jsonString($0) }
+	eq("生成两条匹配", extJSON.count, 2)
+	check("主匹配含 Built-In:0", extJSON[0].contains("\"Built-In\":0"), extJSON[0])
+	check("主匹配含 ProductID", extJSON[0].contains("\"ProductID\":666"), extJSON[0])
+	check("属性键带连字符（写成 BuiltIn 会匹配不到任何设备）",
+		  extJSON.allSatisfy { !$0.contains("\"BuiltIn\"") })
+	check("外接匹配绝不含 Built-In:1", extJSON.allSatisfy { !$0.contains("\"Built-In\":1") })
+	check("次匹配用序列号", extJSON[1].contains("\"SerialNumber\":\"ABC123\""), extJSON[1])
+	eq("无序列号时只有一条匹配", kb(0x05AC, 0x029A, "USB").matchDicts.count, 1)
+
+	print("匹配条件：内置键盘")
+	let builtin = kb(0, 0, "spi", builtIn: true)
+	let biJSON = builtin.matchDicts.map { jsonString($0) }
+	check("内置匹配含 Built-In:1", biJSON.allSatisfy { $0.contains("\"Built-In\":1") })
+	check("内置匹配绝不含 Built-In:0", biJSON.allSatisfy { !$0.contains("\"Built-In\":0") })
+
+	print("设备身份")
+	let usb = kb(0x05AC, 0x029A, "USB")
+	let bt = kb(0x004C, 0x029A, "Bluetooth")
+	eq("同一块键盘 USB 与蓝牙身份相同", usb.id, bt.id)
+	check("不同 PID 身份不同", usb.id != kb(0x05AC, 0x0999, "USB").id)
+	check("内置与外接身份不同", builtin.id != usb.id)
+
+	print("规则与载荷")
+	let r1 = Rule(deviceID: usb.id, label: "kb", matches: extJSON, srcUsage: 0xE6, dstUsage: 0x26)
+	let r2 = Rule(deviceID: usb.id, label: "kb", matches: extJSON, srcUsage: 0xE7, dstUsage: 0x27)
+	let payload = mappingPayload(for: [r1, r2])
+	eq("同设备多条规则合并成一次 set",
+	   payload.components(separatedBy: "HIDKeyboardModifierMappingSrc").count - 1, 2)
+	check("载荷含两条源键", payload.contains("30064771302") && payload.contains("30064771303"), payload)
+	eq("空载荷是空数组", emptyMappingPayload, "{\"UserKeyMapping\":[]}")
+	eq("同设备同源键视为同一条规则", r1.id,
+	   Rule(deviceID: usb.id, label: "x", matches: [], srcUsage: 0xE6, dstUsage: 0x04).id)
+	check("不同源键是不同规则", r1.id != r2.id)
+
+	if let enc = try? JSONEncoder().encode(RuleFile(rules: [r1, r2])),
+	   let back = try? JSONDecoder().decode(RuleFile.self, from: enc) {
+		eq("规则文件 round-trip 条数", back.rules.count, 2)
+		eq("round-trip 保留源键", back.rules[0].srcUsage, 0xE6)
+		eq("round-trip 保留匹配条件", back.rules[0].matches, extJSON)
+	} else {
+		check("规则文件 round-trip", false, "编解码失败")
+	}
+
+	print("保存与覆盖判定")
+	check("空规则 + 未装开机项 → 阻止保存并提示",
+		  blocksEmptySave(rulesEmpty: true, daemonInstalled: false))
+	check("空规则 + 已装开机项 → 允许保存（这就是清空）",
+		  !blocksEmptySave(rulesEmpty: true, daemonInstalled: true))
+	check("有规则 → 允许保存", !blocksEmptySave(rulesEmpty: false, daemonInstalled: false))
+	check("已装且运行且有未保存改动 → daemon 会覆盖回去",
+		  daemonOverrides(installed: true, running: true, dirty: true))
+	check("已同步 → 不会被覆盖", !daemonOverrides(installed: true, running: true, dirty: false))
+	check("未安装 → 不会被覆盖", !daemonOverrides(installed: false, running: false, dirty: true))
+
+	print("hidutil 行为")
+	for (i, m) in extJSON.enumerated() {
+		let (code, _) = runTool(kHidutil, ["property", "--matching", m, "--get", "UserKeyMapping"])
+		check("匹配条件 \(i + 1) 被 hidutil 接受", code == 0)
+	}
+	let bogus = jsonString(["BuiltIn": 0, "PrimaryUsagePage": 1, "PrimaryUsage": 6])
+	let (_, bogusOut) = runTool(kHidutil, ["property", "--matching", bogus, "--get", "UserKeyMapping"])
+	check("属性键写错时 fail-closed，匹配不到任何设备",
+		  !bogusOut.contains("RegistryID"), bogusOut.trimmingCharacters(in: .whitespacesAndNewlines))
+
+	print("全局映射安全")
+	let (_, before) = runTool(kHidutil, ["property", "--get", "UserKeyMapping"])
+	let ghost = kb(0x1234, 0xFFFE, "USB")
+	apply(rules: [Rule(deviceID: ghost.id, label: "ghost",
+					   matches: ghost.matchDicts.map { jsonString($0) },
+					   srcUsage: 0xE6, dstUsage: 0x26)])
+	let (_, after) = runTool(kHidutil, ["property", "--get", "UserKeyMapping"])
+	check("按设备写入不污染全局映射", before == after)
+
+	print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")
+	exit(failures == 0 ? 0 : 1)
+}
+
 // MARK: - 入口
 
-if CommandLine.arguments.contains("--daemon") {
+if CommandLine.arguments.contains("--selftest") {
+	runSelfTest()
+} else if CommandLine.arguments.contains("--daemon") {
 	runDaemon()
 } else if CommandLine.arguments.contains("--list") {
 	// 排查用：打印检测到的键盘、生成的匹配条件、以及各条匹配当前命中的设备

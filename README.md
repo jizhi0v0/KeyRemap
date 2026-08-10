@@ -115,7 +115,22 @@ hidutil property --set '{"UserKeyMapping":[]}'
 Sources/main.swift    全部代码：GUI（SwiftUI）、--daemon 常驻模式、--list 排查模式
 Tools/makeicon.swift  生成 App 图标（渐变圆角方块 + 键盘符号）
 build.sh              编译 + 打图标 + 组 bundle + 签名
+Tests/run.sh          集成测试
 ```
+
+## 测试
+
+```sh
+sh Tests/run.sh
+```
+
+不需要 root，也不会改动真实键盘的映射（用一个不存在的 PID 作为规则目标）。包含：
+
+- 构建产物检查：universal slice、每个 slice 的 `minos` 与 `Info.plist` 一致、签名有效
+- `bundle 副本签名有效` vs `单独拷可执行文件签名失效` —— daemon 安装方式的回归测试
+- 用户域 LaunchAgent 拉起 daemon，断言 `state = running` 且 10 秒后仍在运行
+- `KeyRemap --selftest`：键码换算、匹配条件生成（含 `Built-In` 连字符和 fail-closed）、
+  设备身份跨 USB/蓝牙一致、多规则合并载荷、规则文件 round-trip、空规则的保存与清空语义
 
 同一个二进制三种模式：无参数是 GUI，`--daemon` 由 LaunchDaemon 以 root 运行，`--list` 打印检测到的键盘与匹配命中情况。
 
