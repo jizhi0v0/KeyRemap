@@ -60,15 +60,7 @@ Magic Keyboard with Touch ID  [USB]
 
 ### 方式一：下载 Release
 
-从 [Releases](https://github.com/jizhi0v0/KeyRemap/releases) 下载 zip，解压，拖到 `/Applications`。
-
-Release 里的 app 只做 **ad-hoc 签名**，没有公证 —— 因为 Apple 个人开发者账号的 Developer ID 证书 CN 就是持有人的法定姓名，签名会把真名写进二进制里，任何人 `codesign -dv` 都能看到。为了不暴露这个，这里选择不用 Developer ID 签名。代价是浏览器下载的文件带隔离属性，Gatekeeper 会拦一下，解掉即可：
-
-```sh
-xattr -dr com.apple.quarantine /Applications/KeyRemap.app
-```
-
-想要无摩擦安装的话，用你自己的 Developer ID 从源码构建（见下），`build.sh` 会自动检测并使用本机证书。
+从 [Releases](https://github.com/jizhi0v0/KeyRemap/releases) 下载 zip，解压，拖到 `/Applications`，双击打开。已签名并公证，不需要解隔离属性。
 
 ### 方式二：从源码构建
 
@@ -90,7 +82,7 @@ git clone https://github.com/jizhi0v0/KeyRemap.git && cd KeyRemap && sh build.sh
 
 ```sh
 sudo launchctl bootout system/local.KeyRemap
-sudo rm -f /Library/LaunchDaemons/local.KeyRemap.plist /usr/local/libexec/keyremapd
+sudo rm -f /Library/LaunchDaemons/local.KeyRemap.plist
 sudo rm -rf "/Library/Application Support/KeyRemap"
 hidutil property --set '{"UserKeyMapping":[]}'
 ```
@@ -122,7 +114,7 @@ hidutil property --set '{"UserKeyMapping":[]}'
 ```
 Sources/main.swift    全部代码：GUI（SwiftUI）、--daemon 常驻模式、--list 排查模式
 Tools/makeicon.swift  生成 App 图标（渐变圆角方块 + 键盘符号）
-build.sh              编译 + 打图标 + 组 bundle + ad-hoc 签名
+build.sh              编译 + 打图标 + 组 bundle + 签名
 ```
 
 同一个二进制三种模式：无参数是 GUI，`--daemon` 由 LaunchDaemon 以 root 运行，`--list` 打印检测到的键盘与匹配命中情况。
