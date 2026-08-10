@@ -60,17 +60,13 @@ Magic Keyboard with Touch ID  [USB]
 
 ### 方式一：下载 Release
 
-Release 里的 app 只做了 ad-hoc 签名、没有公证，所以从浏览器下载后 Gatekeeper 会拦。解掉隔离属性即可：
+从 [Releases](https://github.com/jizhi0v0/KeyRemap/releases) 下载 zip，解压，拖到 `/Applications`，双击打开。
 
-```sh
-xattr -dr com.apple.quarantine ~/Downloads/KeyRemap.app
-```
+已用 Developer ID 签名、启用 hardened runtime、**通过 Apple 公证并装订票据**，所以不需要解隔离属性，也不需要去「隐私与安全性」里点「仍要打开」。
 
-然后拖到 `/Applications` 或 `~/Applications`。
+### 方式二：从源码构建
 
-### 方式二：从源码构建（推荐，没有 Gatekeeper 问题）
-
-需要 Xcode 命令行工具：
+需要 Xcode 命令行工具。`build.sh` 会自动挑签名方式：本机有 Developer ID Application 证书就用它（并启用 hardened runtime + 安全时间戳），否则退回 ad-hoc 签名。
 
 ```sh
 git clone https://github.com/jizhi0v0/KeyRemap.git && cd KeyRemap && sh build.sh
