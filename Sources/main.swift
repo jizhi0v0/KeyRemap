@@ -23,11 +23,19 @@ import IOKit.hid
 // MARK: - 常量
 
 let kAppLabel = "local.KeyRemap"
-let kDaemonPath = "/usr/local/libexec/keyremapd"
 let kPlistPath = "/Library/LaunchDaemons/local.KeyRemap.plist"
 let kRulesDir = "/Library/Application Support/KeyRemap"
 let kRulesPath = "/Library/Application Support/KeyRemap/rules.json"
 let kHidutil = "/usr/bin/hidutil"
+
+// daemon 运行的是拷到 root 拥有目录下的**整个 app bundle**，而不是单独抠出来的
+// 可执行文件。原因：codesign 的签名里包含 Info.plist 的哈希，单拷可执行文件会让
+// 签名失效（codesign 报 invalid Info.plist）；而 hardened runtime 会带上 CS_KILL
+// 标志，于是 launchd 一 exec 就被内核杀掉，表现为 last exit reason = OS_REASON_EXEC
+// 且无限重启。拷整个 bundle 则签名完好。
+let kDaemonApp = "/Library/Application Support/KeyRemap/KeyRemap.app"
+let kDaemonExec = "/Library/Application Support/KeyRemap/KeyRemap.app/Contents/MacOS/KeyRemap"
+let kLegacyDaemonPath = "/usr/local/libexec/keyremapd"   // 1.0.0 的残留，安装时清掉
 
 // HID 键码 = 0x700000000 + usage code（usage page 7 = 键盘）
 func keyCode(_ usage: UInt32) -> UInt64 { 0x7_0000_0000 | UInt64(usage) }
@@ -345,6 +353,22 @@ func daemonState() -> DaemonState {
 	return .installed(running: code == 0 && out.contains("state = running"))
 }
 
+/// launchd 认为它挂了的原因，用于把失败如实报给用户，而不是一句「已保存」了事
+func daemonFailureDetail() -> String? {
+	let (code, out) = runTool("/bin/launchctl", ["print", "system/\(kAppLabel)"])
+	guard code == 0 else { return "launchctl 查询不到该服务" }
+	if out.contains("state = running") { return nil }
+	var bits: [String] = []
+	for line in out.split(separator: "\n") {
+		let t = line.trimmingCharacters(in: .whitespaces)
+		if t.hasPrefix("state = ") || t.hasPrefix("last exit reason = ")
+			|| t.hasPrefix("last exit code = ") || t.hasPrefix("runs = ") {
+			bits.append(t)
+		}
+	}
+	return bits.isEmpty ? "未运行" : bits.joined(separator: "，")
+}
+
 /// 用一次管理员授权完成：拷 daemon 二进制、写规则文件、写 plist、重载。
 /// 把命令写进临时脚本再整体提权执行，避免在 AppleScript 里做多层引号转义。
 func installDaemon(rules: RuleFile) throws {
@@ -357,7 +381,11 @@ func installDaemon(rules: RuleFile) throws {
 	enc.outputFormatting = [.prettyPrinted, .sortedKeys]
 	try enc.encode(rules).write(to: rulesTmp)
 
-	let selfPath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+	let bundlePath = Bundle.main.bundlePath
+	guard bundlePath.hasSuffix(".app") else {
+		throw PrivError(msg: "请从 KeyRemap.app 里启动，而不是直接运行可执行文件"
+						+ "（daemon 需要完整的 app bundle 才能通过签名校验）")
+	}
 	let plist = """
 	<?xml version="1.0" encoding="UTF-8"?>
 	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -366,7 +394,7 @@ func installDaemon(rules: RuleFile) throws {
 		<key>Label</key><string>\(kAppLabel)</string>
 		<key>ProgramArguments</key>
 		<array>
-			<string>\(kDaemonPath)</string>
+			<string>\(kDaemonExec)</string>
 			<string>--daemon</string>
 		</array>
 		<key>RunAtLoad</key><true/>
@@ -381,12 +409,17 @@ func installDaemon(rules: RuleFile) throws {
 	let sh = """
 	#!/bin/sh
 	set -e
-	/usr/bin/install -d -o root -g wheel -m 755 /usr/local/libexec
+	/bin/launchctl bootout system/\(kAppLabel) 2>/dev/null || true
 	/usr/bin/install -d -o root -g wheel -m 755 "\(kRulesDir)"
-	/usr/bin/install -o root -g wheel -m 755 "\(selfPath)" "\(kDaemonPath)"
+	# 拷整个 bundle（ditto 保留 bundle 结构和签名），daemon 从这个 root 拥有的副本运行
+	/bin/rm -rf "\(kDaemonApp)"
+	/usr/bin/ditto "\(bundlePath)" "\(kDaemonApp)"
+	/usr/sbin/chown -R root:wheel "\(kDaemonApp)"
+	# 拷完先自检签名：签名不完整的话 launchd exec 时会被 CS_KILL 直接杀掉
+	/usr/bin/codesign --verify --strict "\(kDaemonApp)"
+	/bin/rm -f "\(kLegacyDaemonPath)"
 	/usr/bin/install -o root -g wheel -m 644 "\(rulesTmp.path)" "\(kRulesPath)"
 	/usr/bin/install -o root -g wheel -m 644 "\(plistTmp.path)" "\(kPlistPath)"
-	/bin/launchctl bootout system/\(kAppLabel) 2>/dev/null || true
 	/bin/launchctl bootstrap system "\(kPlistPath)"
 	"""
 	try sh.write(to: shTmp, atomically: true, encoding: .utf8)
@@ -398,7 +431,8 @@ func removeDaemon() throws {
 	let sh = """
 	#!/bin/sh
 	/bin/launchctl bootout system/\(kAppLabel) 2>/dev/null || true
-	/bin/rm -f "\(kPlistPath)" "\(kDaemonPath)" "\(kRulesPath)"
+	/bin/rm -f "\(kPlistPath)" "\(kLegacyDaemonPath)" "\(kRulesPath)"
+	/bin/rm -rf "\(kDaemonApp)"
 	/bin/rmdir "\(kRulesDir)" 2>/dev/null || true
 	exit 0
 	"""
@@ -500,11 +534,25 @@ final class Model: ObservableObject {
 		do {
 			try installDaemon(rules: RuleFile(rules: rules))
 			dirty = false
-			status = "已保存，开机（含登录窗口）自动生效"
+			status = "已保存，正在确认 daemon 启动…"
 		} catch {
 			status = "未保存：\(error.localizedDescription)"
+			refresh()
+			return
 		}
-		refresh()
+		// 装完必须确认它真的跑起来了。以前这里直接报「已保存」，结果 daemon 在
+		// 后台 exec 失败重启了 86 次都没人知道。
+		Task { @MainActor in
+			for _ in 0..<8 {
+				try? await Task.sleep(nanoseconds: 500_000_000)
+				refresh()
+				if case .installed(let running) = daemon, running {
+					status = "已保存，开机（含登录窗口）自动生效"
+					return
+				}
+			}
+			status = "已保存，但 daemon 没能启动：" + (daemonFailureDetail() ?? "原因未知")
+		}
 	}
 
 	func remove() {
