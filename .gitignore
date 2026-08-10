@@ -1,0 +1,4 @@
+build/
+*.iconset
+*.icns
+.DS_Store
