@@ -165,11 +165,10 @@ struct Keyboard: Identifiable, Hashable {
 		return out
 	}
 
+	/// 故意不显示序列号：蓝牙连接时 macOS 把 BT MAC 地址当作 SerialNumber 上报，
+	/// 显示出来会在截图里泄露设备标识。要看完整信息用 --list。
 	var matchSummary: String {
-		builtIn
-			? String(format: "内置键盘 · VID 0x%04X PID 0x%04X", vendorID, productID)
-			: String(format: "匹配：PID 0x%04X + 外接%@", productID,
-					 serial.isEmpty ? "" : " · 序列号 \(serial)")
+		builtIn ? "内置键盘" : String(format: "匹配：PID 0x%04X + 外接", productID)
 	}
 }
 
@@ -664,41 +663,12 @@ struct ContentView: View {
 
 	var body: some View {
 		VStack(spacing: 0) {
-			header
-			Divider()
 			form
 			Divider()
 			footer
 		}
-		.frame(minWidth: 560, minHeight: 430)
+		.frame(width: 560)
 		.background(.windowBackground)
-	}
-
-	// MARK: 顶部标题
-
-	private var header: some View {
-		HStack(spacing: 12) {
-			RoundedRectangle(cornerRadius: 11, style: .continuous)
-				.fill(LinearGradient(colors: [Color.accentColor, Color.accentColor.opacity(0.65)],
-									 startPoint: .top, endPoint: .bottom))
-				.frame(width: 42, height: 42)
-				.overlay {
-					Image(systemName: "keyboard")
-						.font(.system(size: 20, weight: .medium))
-						.foregroundStyle(.white)
-				}
-				.shadow(color: .black.opacity(0.15), radius: 2, y: 1)
-
-			VStack(alignment: .leading, spacing: 2) {
-				Text("按键重映射").font(.system(size: 15, weight: .semibold))
-				Text("按键盘分别设置，密码框与登录窗口同样有效")
-					.font(.caption).foregroundStyle(.secondary)
-			}
-			Spacer()
-		}
-		.padding(.horizontal, 20)
-		.padding(.top, 34)      // 让出无标题栏窗口的红绿灯按钮位置
-		.padding(.bottom, 16)
 	}
 
 	// MARK: 主体
@@ -765,6 +735,10 @@ struct ContentView: View {
 			}
 		}
 		.formStyle(.grouped)
+		// Form 本身是滚动容器，默认会尽量占满可用高度；在窗口按内容自适应的场景下
+		// 反而会被压到内容高度以下，导致下半部分被裁掉（1.0.2 就是这样，「新建映射」
+		// 那一段被底栏盖住）。固定成理想高度，窗口就恰好包住内容。
+		.fixedSize(horizontal: false, vertical: true)
 	}
 
 	// MARK: 底部状态与操作
@@ -816,9 +790,9 @@ struct KeyRemapApp: App {
 		WindowGroup("按键重映射") {
 			ContentView()
 		}
-		.windowStyle(.hiddenTitleBar)
-		.windowResizability(.contentMinSize)
-		.defaultSize(width: 560, height: 520)
+		// 用系统标准标题栏。之前是无标题栏 + 自绘大标题，为了让开红绿灯按钮不得不在
+		// 顶部留 34pt 空白，加上标题文字与窗口标题重复，整体显得松散。
+		.windowResizability(.contentSize)
 	}
 }
 
