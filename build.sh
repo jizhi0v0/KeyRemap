@@ -16,12 +16,24 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$ROOT/build"
 APP="$BUILD/KeyRemap.app"
 
+# 必须显式指定 deployment target。不指定的话 swiftc 会用当前 SDK 的版本，编出来的
+# 二进制 minos 就等于构建机的系统版本，在更低版本的 macOS 上 dyld 直接拒绝加载，
+# Finder 报的是 “is damaged and can't be opened”，极难联想到版本问题。
+MIN_OS=14.0
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-echo "[1/4] 编译"
-swiftc -O "$ROOT/Sources/main.swift" -o "$APP/Contents/MacOS/KeyRemap" \
-	-framework SwiftUI -framework AppKit -framework IOKit
+echo "[1/4] 编译（universal：arm64 + x86_64，最低 macOS $MIN_OS）"
+for arch in arm64 x86_64; do
+	swiftc -O -target "$arch-apple-macos$MIN_OS" "$ROOT/Sources/main.swift" \
+		-o "$BUILD/KeyRemap-$arch" \
+		-framework SwiftUI -framework AppKit -framework IOKit
+done
+lipo -create -output "$APP/Contents/MacOS/KeyRemap" "$BUILD/KeyRemap-arm64" "$BUILD/KeyRemap-x86_64"
+rm -f "$BUILD/KeyRemap-arm64" "$BUILD/KeyRemap-x86_64"
+echo "  架构: $(lipo -archs "$APP/Contents/MacOS/KeyRemap")"
+echo "  minos: $(otool -l "$APP/Contents/MacOS/KeyRemap" | awk '/minos/{print $2; exit}')"
 
 echo "[2/4] 生成图标"
 rm -rf "$BUILD/KeyRemap.iconset"
@@ -39,8 +51,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleName</key><string>KeyRemap</string>
 	<key>CFBundleIconFile</key><string>KeyRemap</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>1.0.1</string>
-	<key>CFBundleVersion</key><string>2</string>
+	<key>CFBundleShortVersionString</key><string>1.0.2</string>
+	<key>CFBundleVersion</key><string>3</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 </dict>
