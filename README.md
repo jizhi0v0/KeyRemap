@@ -14,7 +14,9 @@
 osascript -e 'tell application "System Events" to keystroke "9"'
 ```
 
-它在密码框里**一定会失效**。密码框启用了 Secure Keyboard Entry，Accessibility API 和 CGEvent 注入都会被系统屏蔽 —— 而登录窗口整个就是一个密码框。
+它在登录窗口里**一定会失效**：登录窗口不属于任何用户会话，`System Events` 这类需要投递到会话里的手段在那里没有目标可用。密码框里也靠不住 —— 启用 Secure Keyboard Entry 之后，系统会切断键盘事件流向「拦截进程」（[TN2150](https://developer.apple.com/library/archive/technotes/tn2150/_index.html) 点名了事件 tap 和抢占 HID 设备两类）。
+
+（准确说，TN2150 描述的是阻止**拦截**；注入是否一并被阻止，Apple 没有明说，本项目也没有实测过。但无论如何它覆盖不了登录窗口。）
 
 `hidutil` 的 `UserKeyMapping` 走的是另一条路：映射写在 `IOHIDDevice` 对象上，事件在被分发给任何应用**之前**就已经变成了另一个键。所以它产生的是一个真正的按键，Secure Input 拦不住。副作用也很自然 —— 右 Option 变成 `9` 之后，Shift 组合出 `(`，Cmd 组合就是 `Cmd-9`。
 
@@ -92,7 +94,7 @@ hidutil property --set '{"UserKeyMapping":[]}'
 
 ## 已知限制
 
-- **FileVault 开机解锁界面无效。** 那一步在 macOS 内核和 HID 驱动加载之前，属于固件阶段 —— 任何映射工具都做不到，Karabiner 也一样。如果开机密码里含有坏掉的那个键，只能改密码、或者开机时临时接另一块键盘。
+- **FileVault 开机解锁界面无效。** 那一步数据卷还没解锁，而 daemon、它的 plist、规则文件全都在数据卷上（`/Library/...`），launchd 那时候根本看不到它们 —— 装在同样位置的工具都一样，Karabiner 也不例外。如果开机密码里含有坏掉的那个键，只能改密码、或者开机时临时接另一块键盘。（`man fdesetup` 的 REMOTE UNLOCKING VIA SSH 一节还记载了一条远程解锁的路子，本项目未实测。）
 - **只能单键换单键。** `hidutil` 的模型就是这样，做不了组合键触发（`右Cmd-O → 9`）、长按、连击、按应用区分。要这些请用 Karabiner-Elements。
 - `fn` / 地球键不在可选列表里（它不在标准键盘 usage page 上）。
 - 蓝牙键盘在登录窗口需要先重新连上，映射会在它出现后的一瞬间补上，极端情况可能有一两秒延迟。USB 无此问题。
