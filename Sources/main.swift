@@ -127,8 +127,14 @@ let allKeys: [KeyDef] = {
 	return k
 }()
 
+// usage 0x00 是 HID 的「No Event」：映射过去等于把源键吞掉。用来屏蔽坏掉、会自己
+// 乱触发的键 —— 只作目标键，不出现在源键列表里
+let kBlockUsage: UInt32 = 0x00
+let blockKey = KeyDef(usage: kBlockUsage, name: "无（屏蔽）")
+let targetKeys: [KeyDef] = [blockKey] + allKeys
+
 func keyName(forUsage u: UInt32) -> String {
-	allKeys.first { $0.usage == u }?.name ?? String(format: "usage 0x%02X", u)
+	targetKeys.first { $0.usage == u }?.name ?? String(format: "usage 0x%02X", u)
 }
 
 // MARK: - 键盘设备
@@ -736,7 +742,7 @@ struct ContentView: View {
 					ForEach(allKeys) { Text($0.name).tag($0.usage) }
 				}
 				Picker("变成", selection: $m.dstUsage) {
-					ForEach(allKeys) { Text($0.name).tag($0.usage) }
+					ForEach(targetKeys) { Text($0.name).tag($0.usage) }
 				}
 				HStack {
 					MappingPair(src: m.srcUsage, dst: m.dstUsage)
@@ -875,6 +881,20 @@ func runSelfTest() -> Never {
 	eq("数字 9 → 0x700000026", keyCode(0x26), 0x7_0000_0026)
 	eq("右 Option 十进制", keyCode(0xE6), 30_064_771_302)
 	eq("按键表里没有重复 usage", allKeys.count, Set(allKeys.map(\.usage)).count)
+
+	print("屏蔽")
+	eq("屏蔽 → 0x700000000", keyCode(kBlockUsage), 0x7_0000_0000)
+	check("屏蔽不能当源键", !allKeys.contains { $0.usage == kBlockUsage })
+	eq("目标键列表第一项是屏蔽", targetKeys.first?.usage, kBlockUsage)
+	eq("目标键列表 = 屏蔽 + 全部按键", targetKeys.count, allKeys.count + 1)
+	eq("屏蔽的显示名", keyName(forUsage: kBlockUsage), "无（屏蔽）")
+	let block9 = Rule(deviceID: "ext:666", label: "kb", matches: [], srcUsage: 0x26, dstUsage: kBlockUsage)
+	eq("规则摘要", block9.summary, "数字 9 → 无（屏蔽）")
+	let opt9 = Rule(deviceID: "ext:666", label: "kb", matches: [], srcUsage: 0xE6, dstUsage: 0x26)
+	let blockPayload = mappingPayload(for: [opt9, block9])
+	check("载荷含 9 → 0x700000000",
+		  blockPayload.contains("\"HIDKeyboardModifierMappingDst\":30064771072"), blockPayload)
+	check("右 Option → 9 与屏蔽 9 可以共存", opt9.id != block9.id)
 
 	print("匹配条件：外接键盘")
 	let ext = kb(0x05AC, 0x029A, "USB", serial: "ABC123")

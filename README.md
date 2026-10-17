@@ -80,6 +80,7 @@ git clone https://github.com/jizhi0v0/KeyRemap.git && cd KeyRemap && sh build.sh
 
 1. 打开 App，在「键盘」里点选目标键盘。
 2. 选「把 [某个键] 变成 [某个键]」，点**添加规则** —— 立即生效，不需要密码。
+   - 目标选「无（屏蔽）」就是把这个键吞掉（映射到 HID usage `0x00`）。坏键自己乱触发时用它；和「右 Option → 9」这类规则互不干扰，`hidutil` 只替换一次、不会连锁。
 3. 点**开机自动生效** —— 输一次管理员密码，安装 LaunchDaemon，之后开机与设备重连都自动生效。
 
 **卸载**：App 里点「移除开机项」。或者手工：

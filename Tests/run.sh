@@ -85,7 +85,8 @@ else
 fi
 
 echo "daemon 能被 launchd 拉起并常驻"
-# 用一个不存在的设备（PID 0xFFFE）作为规则目标，绝不碰真实键盘
+# 用一个不存在的设备（PID 0xFFFE）作为规则目标，绝不碰真实键盘；
+# 第二条是屏蔽规则（目标 usage 0），确认 daemon 能读能跑
 cat > "$TMP/rules.json" <<'JSON'
 {
   "version": 1,
@@ -96,6 +97,13 @@ cat > "$TMP/rules.json" <<'JSON'
       "matches": ["{\"Built-In\":0,\"PrimaryUsage\":6,\"PrimaryUsagePage\":1,\"ProductID\":65534}"],
       "srcUsage": 230,
       "dstUsage": 38
+    },
+    {
+      "deviceID": "ext:65534",
+      "label": "ghost",
+      "matches": ["{\"Built-In\":0,\"PrimaryUsage\":6,\"PrimaryUsagePage\":1,\"ProductID\":65534}"],
+      "srcUsage": 38,
+      "dstUsage": 0
     }
   ]
 }
