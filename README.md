@@ -2,9 +2,9 @@
 
 **按指定键盘重映射按键的 macOS 小工具。** 映射写在 IOKit HID 层，所以在密码框、锁屏、登录窗口、`sudo` 提示、终端里一律有效；而且只作用于你选定的那一块键盘 —— MacBook 内置键盘不受影响。
 
-> A tiny macOS utility that remaps keys **per keyboard**. Mappings are applied at the IOKit HID layer via `hidutil`, so they work in password fields, the lock screen and the login window — and only on the physical keyboard you pick, leaving the built-in MacBook keyboard untouched. No kernel extension, no Accessibility permission, no Input Monitoring permission. Single Swift file, ~450 KB app.
+> A tiny macOS utility that remaps keys **per keyboard**. Mappings are applied at the IOKit HID layer via `hidutil`, so they work in password fields, the lock screen and the login window — and only on the physical keyboard you pick, leaving the built-in MacBook keyboard untouched. No kernel extension, no Accessibility permission, no Input Monitoring permission. Single Swift file, ~1.3 MB universal app.
 
-起因很具体：一块 Magic Keyboard 的 `9` 键物理损坏，需要把右 Option 变成 `9`。这块键盘会在 Mac mini 和 MacBook Pro 之间换用，所以映射必须**跟着键盘走**，且**绝不能碰 MacBook 的内置键盘**。
+起因很具体：一块 Magic Keyboard 的 `9` 键物理损坏，需要把右 Option 变成 `9`；后来坏键还开始在按旁边的键时自己狂打 `9`，于是又加了「屏蔽」—— 把坏键本身吞掉。这块键盘会在 Mac mini 和 MacBook Pro 之间换用，所以映射必须**跟着键盘走**，且**绝不能碰 MacBook 的内置键盘**。
 
 ## 为什么不是 AppleScript / 事件监听那一套
 
@@ -52,7 +52,7 @@ Magic Keyboard with Touch ID  [USB]
 
 `UserKeyMapping` 是挂在 `IOHIDDevice` 对象上的属性，**设备一断开就随对象消失**：拔插 USB 线、蓝牙键盘休眠、重新配对、重启，映射都会没了。
 
-所以「保存并开机生效」会安装一个 LaunchDaemon（`local.KeyRemap`，system 域，root，`RunAtLoad`）：
+所以「开机自动生效」会安装一个 LaunchDaemon（`local.KeyRemap`，system 域，root，`RunAtLoad`）：
 
 - 开机时在 loginwindow 接受输入之前就把映射写好 → **登录窗口有效**。
 - 用 IOKit 注册表通知（`IOServiceAddMatchingNotification`）监听设备出现，键盘一插上/一连上就补映射；外加 3 秒巡检兜底，覆盖休眠唤醒之类的边界情况。单次探测约 7 ms，常驻 0% CPU / 11 MB。
@@ -96,6 +96,7 @@ hidutil property --set '{"UserKeyMapping":[]}'
 ## 已知限制
 
 - **FileVault 开机解锁界面无效。** 那一步数据卷还没解锁，而 daemon、它的 plist、规则文件全都在数据卷上（`/Library/...`），launchd 那时候根本看不到它们 —— 装在同样位置的工具都一样，Karabiner 也不例外。如果开机密码里含有坏掉的那个键，只能改密码、或者开机时临时接另一块键盘。（`man fdesetup` 的 REMOTE UNLOCKING VIA SSH 一节还记载了一条远程解锁的路子，本项目未实测。）
+- **屏蔽只能拦住键盘真正报成 `9` 的事件。** 如果坏键导致的是矩阵短路 —— 按旁边的键时硬件只报 `9`、本键反而丢了 —— 那是硬件层面的错，软件救不回来。
 - **只能单键换单键。** `hidutil` 的模型就是这样，做不了组合键触发（`右Cmd-O → 9`）、长按、连击、按应用区分。要这些请用 Karabiner-Elements。
 - `fn` / 地球键不在可选列表里（它不在标准键盘 usage page 上）。
 - 蓝牙键盘在登录窗口需要先重新连上，映射会在它出现后的一瞬间补上，极端情况可能有一两秒延迟。USB 无此问题。
@@ -113,7 +114,7 @@ hidutil property --set '{"UserKeyMapping":[]}'
 
 **功能最全的是 Karabiner-Elements**，而且它同样支持登录窗口（Misc 标签页把配置复制为 system default configuration）。如果你需要组合键、按应用规则，直接用它。
 
-本项目的位置：只做一件事，因此**不装内核扩展 / 系统扩展，不申请任何权限**，一个 Swift 文件、450 KB。hidutil 这一层的现有工具里，PearHID 有 GUI 但只能全局映射，kb-remap 能指定设备但明确不做持久化 —— 「按设备 + 开机持久 + 重连自愈 + GUI」这四件事凑齐的，暂时没找到。
+本项目的位置：只做一件事，因此**不装内核扩展 / 系统扩展，不申请任何权限**，一个 Swift 文件、约 1.3 MB（universal）。hidutil 这一层的现有工具里，PearHID 有 GUI 但只能全局映射，kb-remap 能指定设备但明确不做持久化 —— 「按设备 + 开机持久 + 重连自愈 + GUI」这四件事凑齐的，暂时没找到。
 
 ## 结构
 
@@ -135,7 +136,7 @@ sh Tests/run.sh
 - 构建产物检查：universal slice、每个 slice 的 `minos` 与 `Info.plist` 一致、签名有效
 - `bundle 副本签名有效` vs `单独拷可执行文件签名失效` —— daemon 安装方式的回归测试
 - 用户域 LaunchAgent 拉起 daemon，断言 `state = running` 且 10 秒后仍在运行
-- `KeyRemap --selftest`：键码换算、匹配条件生成（含 `Built-In` 连字符和 fail-closed）、
+- `KeyRemap --selftest`：键码换算（含屏蔽目标 `0x700000000`）、匹配条件生成（含 `Built-In` 连字符和 fail-closed）、
   设备身份跨 USB/蓝牙一致、多规则合并载荷、规则文件 round-trip、空规则的保存与清空语义
 
 同一个二进制四种模式：无参数是 GUI，`--daemon` 由 LaunchDaemon 以 root 运行，`--list` 打印检测到的键盘与匹配命中情况，`--selftest` 跑纯逻辑断言。
