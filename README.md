@@ -4,7 +4,9 @@
 
 > A tiny macOS utility that remaps keys **per keyboard**. Mappings are applied at the IOKit HID layer via `hidutil`, so they work in password fields, the lock screen and the login window — and only on the physical keyboard you pick, leaving the built-in MacBook keyboard untouched. No kernel extension, no Accessibility permission, no Input Monitoring permission. Single Swift file, ~1.3 MB universal app.
 
-起因很具体：一块 Magic Keyboard 的 `9` 键物理损坏，需要把右 Option 变成 `9`；后来坏键还开始在按旁边的键时自己狂打 `9`，于是又加了「屏蔽」—— 把坏键本身吞掉。这块键盘会在 Mac mini 和 MacBook Pro 之间换用，所以映射必须**跟着键盘走**，且**绝不能碰 MacBook 的内置键盘**。
+起因很具体：一块 Magic Keyboard 的 `9` 键彻底坏了 —— 整个键帽凹了进去，根本按不动，只能把右 Option 变成 `9`。这块键盘会在 Mac mini 和 MacBook Pro 之间换用，所以映射必须**跟着键盘走**，且**绝不能碰 MacBook 的内置键盘**。
+
+两个月后它又换了一种坏法：按 `9` **附近的键**时，后面会自动追加 `9`，而且不停地连发。附近的键本身照常输出，多出来的只是 `9` —— 看起来像是按附近的键时键盘板跟着受力，把那颗凹下去的 `9` 的触点碰通了，键盘于是把 `9` 当成「一直按着」上报（没有拆开确认）。既然多出来的是一个货真价实的 `9` 事件，就能在 HID 层拦下：把这块键盘的 `9` 映射成「无」（HID usage `0x00`），它在进入系统之前就被吞掉，右 Option → `9` 照常可用。这就是「屏蔽」功能的来历。
 
 ## 为什么不是 AppleScript / 事件监听那一套
 
